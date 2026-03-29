@@ -3,6 +3,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, date
 import plotly.express as px
+import json
 import time
 
 # ====================== ページ設定 ======================
@@ -24,31 +25,35 @@ if "portfolio" not in st.session_state:
     ])
 
 # ====================== データ取得関数（強化版） ======================
+@st.cache_data(ttl=180)  # 3分キャッシュ
 def get_current_price(ticker: str):
     try:
         original = ticker.strip().upper()
-        if original.replace(".", "").replace("-", "").isdigit() or len(original) <= 6:
-            if not original.endswith(".T"):
-                ticker = original + ".T"
+        # 日本株の自動補完
+        if not original.endswith(".T") and (original.replace(".", "").replace("-", "").isdigit() or len(original) <= 6):
+            ticker = original + ".T"
         else:
             ticker = original
 
         stock = yf.Ticker(ticker)
-        
-        for attempt in range(3):
-            try:
-                price = stock.fast_info.get('lastPrice') or stock.fast_info.get('last_price')
-                if price and price > 0:
-                    return round(float(price), 4)
-            except:
-                pass
-            
-            data = stock.history(period="5d")
-            if not data.empty:
-                return round(data['Close'].iloc[-1], 4)
-            
-            time.sleep(0.8)
-        
+
+        # 優先順位1: info
+        info = stock.info
+        price = info.get('currentPrice') or info.get('regularMarketPrice')
+        if price and price > 0:
+            return round(float(price), 4)
+
+        # 優先順位2: fast_info
+        fast = stock.fast_info
+        price = fast.get('lastPrice') or fast.get('last_price')
+        if price and price > 0:
+            return round(float(price), 4)
+
+        # 優先順位3: history
+        data = stock.history(period="5d")
+        if not data.empty:
+            return round(data['Close'].iloc[-1], 4)
+
         return None
     except Exception:
         return None
@@ -66,7 +71,7 @@ def get_grip_rank(days: int):
     else:
         return "🤏 握力弱め（要注意）"
 
-# ====================== 銘柄リスト（名前＋コード） ======================
+# ====================== 銘柄リスト ======================
 TICKER_DICT = {
     # 日本株
     "トヨタ自動車 (7203.T)": "7203.T",
@@ -134,8 +139,9 @@ with tab1:
             )
             
             if selected_name == "その他（手入力）":
-                ticker = st.text_input("銘柄コードを手入力", placeholder="DOGE-USD  or  PEPE-USD  or  AAPL")
-                display_name = ticker.upper() if ticker else ""
+                ticker_input = st.text_input("銘柄コードを手入力", placeholder="例: DOGE-USD  or  7203  or  AAPL")
+                ticker = ticker_input.strip().upper() if ticker_input else ""
+                display_name = ticker
             else:
                 ticker = TICKER_DICT[selected_name]
                 display_name = selected_name
@@ -152,7 +158,7 @@ with tab1:
         submitted = st.form_submit_button("💪 この銘柄をポートフォリオに追加")
         
         if submitted:
-            if not ticker or ticker.strip() == "":
+            if not ticker:
                 st.error("銘柄を選択または入力してください")
             else:
                 current_price = get_current_price(ticker)
@@ -166,7 +172,7 @@ with tab1:
                     valuation = round(current_price * shares, 0)
                     
                     new_row = pd.DataFrame([{
-                        "銘柄コード": ticker.upper(),
+                        "銘柄コード": ticker,
                         "銘柄名": display_name,
                         "購入日": purchase_date,
                         "保有期間(日)": days_held,
@@ -200,12 +206,14 @@ with tab2:
         
         st.info(f"**総合握力：{get_grip_rank(avg_days)}**（平均 {avg_days}日）")
         
+        # データフレーム表示
         event = st.dataframe(
             st.session_state.portfolio,
             use_container_width=True,
             hide_index=True,
             selection_mode="single-row",
             on_select="rerun",
+            key="portfolio_table",
             column_config={
                 "銘柄名": st.column_config.TextColumn("銘柄名", width="large"),
                 "銘柄コード": st.column_config.TextColumn("コード"),
@@ -217,8 +225,10 @@ with tab2:
             }
         )
         
-        if event and len(event.selection.get("rows", [])) > 0:
-            idx = event.selection["rows"][0]
+        # 選択行の詳細表示
+        selected_rows = event.selection.get("rows", []) if hasattr(event, "selection") else []
+        if selected_rows:
+            idx = selected_rows[0]
             row = st.session_state.portfolio.iloc[idx]
             
             with st.expander(f"🔍 {row['銘柄名']} の詳細", expanded=True):
@@ -235,9 +245,35 @@ with tab2:
                 
                 st.info(f"**握力ランク：{get_grip_rank(row['保有期間(日)'])}**")
         
+        # ポートフォリオのエクスポート・インポート
+        col_exp, col_imp = st.columns(2)
+        with col_exp:
+            if st.button("📥 ポートフォリオをダウンロード"):
+                json_str = st.session_state.portfolio.to_json(orient="records", date_format="iso")
+                st.download_button(
+                    label="JSONとしてダウンロード",
+                    data=json_str,
+                    file_name=f"握力ポートフォリオ_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json"
+                )
+        
+        with col_imp:
+            uploaded = st.file_uploader("📤 ポートフォリオをアップロード", type=["json"])
+            if uploaded:
+                try:
+                    uploaded_df = pd.read_json(uploaded)
+                    st.session_state.portfolio = uploaded_df
+                    st.success("ポートフォリオを読み込みました！")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"読み込みエラー: {e}")
+        
+        # リセット（確認付き）
         if st.button("🗑️ ポートフォリオをリセット"):
-            st.session_state.portfolio = pd.DataFrame(columns=st.session_state.portfolio.columns)
-            st.rerun()
+            if st.checkbox("本当にすべての銘柄を削除しますか？（元に戻せません）", key="reset_confirm"):
+                st.session_state.portfolio = pd.DataFrame(columns=st.session_state.portfolio.columns)
+                st.success("ポートフォリオをリセットしました。")
+                st.rerun()
     else:
         st.info("まだ銘柄がありません。「銘柄を握る」タブから追加してください！")
 
@@ -260,3 +296,7 @@ with tab3:
         st.info("銘柄を追加するとグラフが表示されます。")
 
 st.caption("Made with 💪 & Streamlit | 日本株・米国株・仮想通貨・ミームコイン・インデックス対応 | Yahoo Financeより価格取得")
+
+# フッターに簡単な使い方
+st.markdown("---")
+st.markdown("**使い方**：銘柄を追加 → 保有期間が自動で「握力」として診断されます。リロードしてもデータが消えないよう、ダウンロード機能も搭載！")
