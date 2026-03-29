@@ -21,7 +21,7 @@ if "portfolio" not in st.session_state:
         "取得価格", "現在価格", "含み損益率(%)", "含み損益額", "評価額"
     ])
 
-# ====================== データ取得関数（日本株対応強化） ======================
+# ====================== データ取得関数 ======================
 def get_current_price(ticker: str):
     try:
         original_ticker = ticker.strip().upper()
@@ -103,7 +103,7 @@ with tab1:
                     st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
                     st.success(f"✅ {ticker} を追加しました！ 現在の握力：{days_held}日")
 
-# ====================== タブ2：ポートフォリオ一覧 ======================
+# ====================== タブ2：ポートフォリオ一覧（クリックでツリー表示） ======================
 with tab2:
     if not st.session_state.portfolio.empty:
         st.subheader("📊 あなたのポートフォリオ")
@@ -135,37 +135,84 @@ with tab2:
         
         st.info(f"**現在の総合握力：{grip}**（平均保有 {avg_days}日）")
         
-        # データフレーム（色付け）
-        def color_profit(val):
-            if val > 0:
-                return 'background-color: #d4edda; color: #155724'
-            elif val < 0:
-                return 'background-color: #f8d7da; color: #721c24'
-            return ''
-        
-        styled_df = st.session_state.portfolio.style.format({
-            "取得価格": "{:.2f}",
-            "現在価格": "{:.2f}",
-            "含み損益率(%)": "{:.2f}",
-            "含み損益額": "{:.0f}",
-            "評価額": "{:.0f}",
-            "保有数量": "{:.2f}"
-        }).applymap(color_profit, subset=["含み損益率(%)", "含み損益額"])
-        
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
-        
+        # ====================== クリック対応データフレーム ======================
+        event = st.dataframe(
+            st.session_state.portfolio,
+            use_container_width=True,
+            hide_index=True,
+            selection_mode="single-row",   # 行をクリックで選択（端っこタップでも反応）
+            on_select="rerun",
+            column_config={
+                "銘柄コード": st.column_config.TextColumn(
+                    "銘柄コード",
+                    help="タップ/クリックで詳細ツリーを表示",
+                    width="medium"
+                ),
+                "取得価格": st.column_config.NumberColumn("取得価格", format="¥%.2f"),
+                "現在価格": st.column_config.NumberColumn("現在価格", format="¥%.2f"),
+                "含み損益率(%)": st.column_config.NumberColumn("含み損益率(%)", format="%.2f%%"),
+                "含み損益額": st.column_config.NumberColumn("含み損益額", format="¥%.0f"),
+                "評価額": st.column_config.NumberColumn("評価額", format="¥%.0f"),
+                "保有数量": st.column_config.NumberColumn("保有数量", format="%.2f"),
+            }
+        )
+
+        # 選択された行があれば詳細ツリーを表示
+        if event and len(event.selection.get("rows", [])) > 0:
+            selected_idx = event.selection["rows"][0]
+            row = st.session_state.portfolio.iloc[selected_idx]
+            
+            st.success(f"📌 選択中: **{row['銘柄コード']}**")
+            
+            # ====================== ツリー風詳細表示 ======================
+            with st.expander("🔍 銘柄詳細ツリー", expanded=True):
+                st.write(f"### {row['銘柄コード']} の握力詳細")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("保有期間（握力）", f"{row['保有期間(日)']} 日")
+                    st.metric("購入日", row['購入日'].strftime('%Y-%m-%d'))
+                    st.metric("保有数量", f"{row['保有数量']:.2f}")
+                
+                with col2:
+                    st.metric("取得価格", f"¥{row['取得価格']:,.2f}")
+                    st.metric("現在価格", f"¥{row['現在価格']:,.2f}")
+                    profit_color = "🟢 利益" if row['含み損益額'] >= 0 else "🔴 損失"
+                    st.metric("含み損益額", f"¥{row['含み損益額']:,.0f}", delta=f"{row['含み損益率(%)']:.2f}%")
+                    st.metric("評価額", f"¥{row['評価額']:,.0f}")
+                
+                st.divider()
+                
+                # 握力ランク（個別銘柄用）
+                days = row['保有期間(日)']
+                if days >= 365:
+                    rank = "🦾 鉄の握力（伝説級）"
+                elif days >= 180:
+                    rank = "💪 強い握力（上級者）"
+                elif days >= 90:
+                    rank = "👍 普通の握力（中級者）"
+                elif days >= 30:
+                    rank = "👌 まだ握れてる（初心者脱却）"
+                else:
+                    rank = "🤏 握力弱め（要注意）"
+                
+                st.info(f"**この銘柄の握力ランク：{rank}**")
+                
+                # さらに詳細を追加したい場合はここに書く（例：簡単なチャートなど）
+
+        # リセットボタン
         if st.button("🗑️ ポートフォリオをリセット"):
             st.session_state.portfolio = pd.DataFrame(columns=st.session_state.portfolio.columns)
             st.rerun()
+
     else:
         st.info("まだ銘柄が追加されていません。左のタブ「🆕 銘柄を握る」から追加してください！")
 
-# ====================== タブ3：握力分析（グラフ） ======================
+# ====================== タブ3：握力分析 ======================
 with tab3:
     if not st.session_state.portfolio.empty:
         st.subheader("📈 握力分析")
         
-        # 評価額構成比（パイチャート）
         fig_pie = px.pie(
             st.session_state.portfolio,
             values="評価額",
@@ -175,7 +222,6 @@ with tab3:
         )
         st.plotly_chart(fig_pie, use_container_width=True)
         
-        # 保有期間ごとの棒グラフ
         fig_bar = px.bar(
             st.session_state.portfolio,
             x="銘柄コード",
@@ -186,7 +232,6 @@ with tab3:
         )
         st.plotly_chart(fig_bar, use_container_width=True)
         
-        # 含み損益率の散布図（保有期間 vs 含み損益率）
         fig_scatter = px.scatter(
             st.session_state.portfolio,
             x="保有期間(日)",
